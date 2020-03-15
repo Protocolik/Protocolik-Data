@@ -17,4 +17,5 @@ dependencies {
     implementation(kotlin("stdlib-jdk8"))
     api("com.google.code.gson", "gson", "2.8.6")
     api("it.unimi.dsi", "fastutil", "8.3.1")
+    api("org.jsoup", "jsoup", "1.13.1")
 }

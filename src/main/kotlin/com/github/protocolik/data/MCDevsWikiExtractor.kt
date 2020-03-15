@@ -1,22 +1,228 @@
 package com.github.protocolik.data
 
+import com.github.protocolik.api.protocol.PacketType
+import com.github.protocolik.api.protocol.ProtocolDirection
+import com.github.protocolik.api.protocol.ProtocolState
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonObject
+import com.google.gson.JsonParser
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
 import java.io.File
 import java.net.URL
 import java.util.*
+import kotlin.collections.HashMap
 
 val ROOT_DIR = if (File("Protocolik-Data").exists()) File("Protocolik-Data") else File("")
 val GSON = GsonBuilder().setPrettyPrinting().create()
 
 fun main() {
+    parse()
+}
+
+fun parse() {
     val versions = ProtocolVersionsNumbers.parse()
+
     val protocolJavaVersionsJson = JsonObject()
     versions.forEach {
         protocolJavaVersionsJson.addProperty(it.releaseName, it.versionNumber)
+        println(it)
     }
     File(ROOT_DIR, "protocol_java_versions.json").writeText(GSON.toJson(protocolJavaVersionsJson))
+
+    var nettyPackets = true
+    val asyncPackets = versions.map {
+        GlobalScope.async {
+            val url = it.lastKnownDocumentation
+            if (url != null && nettyPackets) {
+                try {
+                    if (it.versionNumber == 0) {
+                        nettyPackets = false
+                    }
+                    ProtocolPackets(it.versionNumber, url).parse()
+                } catch (e: Exception) {
+                    throw Exception("Error parsing $url", e)
+                }
+            } else {
+                emptyList()
+            }
+        }
+    }
+    runBlocking {
+        asyncPackets.forEach {
+            it.await().saveNames()
+        }
+    }
+}
+
+private fun List<ProtocolPackets.PacketInfo>.saveNames() {
+    val mcDevsWikiPacketNamesJson = File(ROOT_DIR, "mc_devs_wiki_packet_names.json").also { file ->
+        val json = if (file.exists()) JsonParser.parseReader(file.reader()).asJsonObject else JsonObject()
+        val map = HashMap<String, PacketType?>()
+        val packetTypeValues = PacketType.values()
+        for (entry in json.entrySet()) {
+            map[entry.key] = packetTypeValues.find { it.name == entry.value.asString.toUpperCase() }
+        }
+        for (packet in this) {
+            val packetName = packet.packetName
+            val packetKey = packet.protocolState.name + "_" +
+                    packet.protocolDirection.name + "_" +
+                    packetName.toUpperCase()
+            if (!map.containsKey(packetName)) {
+                val type = packetTypeValues.find { it.name == packetKey }
+                if (type != null) {
+                    map[packetName] = type
+                } else {
+                    map[packetName] = null
+                    println("Unknown type for name: $packetName - $packetKey???")
+                }
+            }
+        }
+        map.forEach { (key, value) ->
+            json.addProperty(key, value?.name?.toLowerCase() ?: "")
+        }
+        file.writeText(GSON.toJson(json))
+    }
+}
+
+class ProtocolPackets(val protocolVersion: Int, val url: URL) {
+    val packets = LinkedList<PacketInfo>()
+    var currentProtocolState: ProtocolState? = null
+    var currentProtocolDirection: ProtocolDirection? = null
+
+    data class PacketInfo(
+            val protocolVersion: Int,
+            val protocolState: ProtocolState,
+            val protocolDirection: ProtocolDirection,
+            val packetId: String,
+            val packetName: String
+    )
+
+    fun parse(): List<PacketInfo> {
+        println("Parsing $protocolVersion $url")
+        val document = Jsoup.connect(url.toString()).get()
+        val title = document.selectFirst("h1").text()
+        if (title.equals("Pre-release protocol", true)) {
+            document.parsePreReleaseProtocol()
+        }
+        if (title.equals("Protocol", true)) {
+            document.parseProtocol()
+        }
+        return packets
+    }
+
+    fun Document.parseProtocol() {
+        var currentPacketName: String? = null
+        iterator@ for (element in selectFirst("div#mw-content-text").allElements.toList()) {
+//            println("element=$element")
+            if (element.`is`("h2")) {
+                currentProtocolState = when (element.selectFirst("span")?.text() ?: "") {
+                    "Handshaking" -> ProtocolState.HANDSHAKING
+                    "Status" -> ProtocolState.STATUS
+                    "Login" -> ProtocolState.LOGIN
+                    "Play" -> ProtocolState.PLAY
+                    else -> continue@iterator
+                }
+//                println("ProtocolState = $currentProtocolState")
+            }
+            if (element.`is`("h3")) {
+                currentProtocolDirection = when (element.selectFirst("span")?.text() ?: "") {
+                    "Clientbound" -> ProtocolDirection.CLIENTBOUND
+                    "Serverbound" -> ProtocolDirection.SERVERBOUND
+                    else -> continue@iterator
+                }
+//                println("ProtocolDirection=$currentProtocolDirection")
+            }
+            if (element.`is`("h4")) {
+                currentPacketName = (element.selectFirst("span")?.text() ?: "").formatPacketName()
+//                println("PacketName=$currentPacketName")
+            }
+            if (element.`is`("table") && currentPacketName != null) {
+                try {
+                    val tableR = element.select("tr").toList()
+                    if (tableR.size >= 2 && tableR[0].text().startsWith("Packet ID")) {
+                        val tableD = tableR[1].select("td").toList()
+                        val packetId = tableD.first().text().trim()
+                        val packetInfo = PacketInfo(
+                                protocolVersion,
+                                currentProtocolState!!,
+                                currentProtocolDirection!!,
+                                packetId,
+                                currentPacketName
+                        )
+                        packets.add(packetInfo)
+//                        println("Packet=$packetInfo")
+                    }
+                } finally {
+                    currentPacketName = null
+                }
+            }
+        }
+    }
+
+    fun Document.parsePreReleaseProtocol() {
+        this.select("tbody").forEach { tableBody ->
+            val tableRows = tableBody.select("tr").toList()
+            try {
+                var tableH = tableRows.first().select("th").toList()
+                if (tableH.size >= 2 && tableH[1].text().contains("Packet name", true)) {
+                    tableRows.forEach { tableRow ->
+                        tableH = tableRow.select("th").toList()
+//                    println("TABLEH(${tableH.size}) = $tableH")
+                        if (tableH.size == 1) {
+                            val text = tableH.first().text()
+                            if (text.contains("serverbound", true)) {
+                                currentProtocolDirection = ProtocolDirection.SERVERBOUND
+                            }
+                            if (text.contains("clientbound", true)) {
+                                currentProtocolDirection = ProtocolDirection.CLIENTBOUND
+                            }
+                            if (text.contains("handshaking", true)) {
+                                currentProtocolState = ProtocolState.HANDSHAKING
+                            }
+                            if (text.contains("status", true)) {
+                                currentProtocolState = ProtocolState.STATUS
+                            }
+                            if (text.contains("login", true)) {
+                                currentProtocolState = ProtocolState.LOGIN
+                            }
+                            if (text.contains("play", true)) {
+                                currentProtocolState = ProtocolState.PLAY
+                            }
+                        }
+
+                        val tableD = tableRow.select("td").toList()
+//                    println("TABLED(${tableD.size}) = $tableD")
+                        if (tableD.isNotEmpty()) {
+                            val packetId = tableD[0].text().trim().split(" ").last()
+                            val packetName = tableD[1].text().formatPacketName()
+                            val packetInfo = PacketInfo(
+                                    protocolVersion,
+                                    currentProtocolState!!,
+                                    currentProtocolDirection!!,
+                                    packetId,
+                                    packetName
+                            )
+                            packets.add(packetInfo)
+//                            println("PACKET=$packetInfo")
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                throw java.lang.Exception("Error parsing table: $tableRows")
+            }
+        }
+    }
+
+    fun String.formatPacketName() = trim().toLowerCase()
+            .replace("(", "")
+            .replace(")", "")
+            .replace(" ", "_")
+            .replace("-", "_")
+            .replace("/", "_")
 }
 
 object ProtocolVersionsNumbers {
@@ -55,9 +261,3 @@ object ProtocolVersionsNumbers {
     }
 }
 
-
-private fun getWikiSource(pageTitle: String): String? {
-    val document = Jsoup.connect("https://wiki.vg/index.php?title=$pageTitle&action=edit").get()
-    val select = document.select("textarea")
-    return select.text()
-}

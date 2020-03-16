@@ -6,6 +6,9 @@ import com.github.protocolik.api.protocol.ProtocolState
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
@@ -33,17 +36,14 @@ fun parse() {
 
     var nettyPackets = true
     val asyncPackets = versions.map {
-        runBlocking {
+        GlobalScope.async {
             val url = it.lastKnownDocumentation
             if (url != null && nettyPackets) {
                 try {
                     if (it.versionNumber == 0) {
                         nettyPackets = false
                     }
-                    ProtocolPackets(it, url).parse().also {
-                        it.saveNames()
-                        PacketMappings.parse(it)
-                    }
+                    ProtocolPackets(it, url).parse()
                 } catch (e: Exception) {
                     throw Exception("Error parsing $url", e)
                 }
@@ -52,11 +52,12 @@ fun parse() {
             }
         }
     }
-//    runBlocking {
-//        asyncPackets.forEach {
-//            it.saveNames()
-//        }
-//    }
+    runBlocking {
+        asyncPackets.awaitAll().forEach {
+            it.saveNames()
+            PacketMappings.parse(it)
+        }
+    }
 }
 
 object PacketMappings {

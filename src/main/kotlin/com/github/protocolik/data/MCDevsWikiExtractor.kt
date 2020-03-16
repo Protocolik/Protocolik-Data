@@ -33,29 +33,31 @@ fun parse() {
     File(ROOT_DIR, "protocol_java_versions.json").writeText(GSON.toJson(protocolJavaVersionsJson))
 
     var nettyPackets = true
-    val dispatcher = Executors.newFixedThreadPool(12).asCoroutineDispatcher()
-    val asyncPackets = versions.map {
-        GlobalScope.async(dispatcher) {
-            val url = it.lastKnownDocumentation
-            if (url != null && nettyPackets) {
-                try {
-                    if (it.versionNumber == 0) {
-                        nettyPackets = false
+    val dispatcher = Executors.newFixedThreadPool(1).asCoroutineDispatcher()
+    val asyncPackets = GlobalScope.async(dispatcher) {
+        versions.map {
+            async {
+                val url = it.lastKnownDocumentation
+                if (url != null && nettyPackets) {
+                    try {
+                        if (it.versionNumber == 0) {
+                            nettyPackets = false
+                        }
+                        ProtocolPackets(it, url).parse().also {
+                            it.saveNames()
+                            PacketMappings.parse(it)
+                        }
+                    } catch (e: Exception) {
+                        throw Exception("Error parsing $url", e)
                     }
-                    ProtocolPackets(it, url).parse().also {
-                        it.saveNames()
-                        PacketMappings.parse(it)
-                    }
-                } catch (e: Exception) {
-                    throw Exception("Error parsing $url", e)
+                } else {
+                    emptyList()
                 }
-            } else {
-                emptyList()
             }
         }
     }
     runBlocking {
-        asyncPackets.awaitAll().forEach {
+        asyncPackets.await().awaitAll().forEach {
 
         }
     }
@@ -73,6 +75,8 @@ object PacketMappings {
                 val jsonPacket = if (json.has(packetType.name.toLowerCase())) json.getAsJsonObject(packetType.name.toLowerCase()) else JsonObject()
                 jsonPacket.addProperty(packetInfo.protocolVersion.releaseName, packetInfo.packetId)
                 json.add(packetType.name.toLowerCase(), jsonPacket)
+            } else {
+//                error("PacketType == null $packetInfo")
             }
         }
         file.writeText(GSON.toJson(json))
@@ -91,7 +95,7 @@ private fun List<ProtocolPackets.PacketInfo>.saveNames() {
         for (packet in this) {
             val packetName = packet.packetName
             val packetKey = packetName.toUpperCase()
-            val type = packetTypeValues.find { it.name == packetKey }
+            val type = packetTypeValues.find { it.name == packetKey } ?: map[packetName]
             if (!map.containsKey(packetName) || map[packetName] == null) {
                 if (type != null) {
                     map[packetName] = type

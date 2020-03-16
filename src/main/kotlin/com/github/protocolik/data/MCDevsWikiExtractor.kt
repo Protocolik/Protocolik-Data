@@ -20,6 +20,8 @@ val GSON = GsonBuilder().setPrettyPrinting().create()
 
 fun main() {
     parse()
+//    val version = ProtocolVersionsNumbers.Version("1.15.2", 578, URL("https://wiki.vg/Protocol"))
+//    val parse = ProtocolPackets(version, version.lastKnownDocumentation!!).parse()
 }
 
 fun parse() {
@@ -31,7 +33,6 @@ fun parse() {
         println(it)
     }
     File(ROOT_DIR, "protocol_java_versions.json").writeText(GSON.toJson(protocolJavaVersionsJson))
-
     var nettyPackets = true
     val dispatcher = Executors.newFixedThreadPool(1).asCoroutineDispatcher()
     val asyncPackets = GlobalScope.async(dispatcher) {
@@ -73,7 +74,9 @@ object PacketMappings {
             val packetType = packetInfo.packetType
             if (packetType != null) {
                 val jsonPacket = if (json.has(packetType.name.toLowerCase())) json.getAsJsonObject(packetType.name.toLowerCase()) else JsonObject()
-                jsonPacket.addProperty(packetInfo.protocolVersion.releaseName, packetInfo.packetId)
+                val versionName = packetInfo.protocolVersion.releaseName
+                val packetId = packetInfo.packetId
+                jsonPacket.addProperty(versionName, packetId)
                 json.add(packetType.name.toLowerCase(), jsonPacket)
             } else {
 //                error("PacketType == null $packetInfo")

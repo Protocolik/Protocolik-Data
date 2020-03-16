@@ -44,7 +44,7 @@
   "play_serverbound_interact_entity": "play_serverbound_player_interact_entity",
   "play_serverbound_entity_action": "play_serverbound_player_state",
   "play_clientbound_block_entity_data": "play_clientbound_tile_entity_data",
-  "play_serverbound_close_window": "play_clientbound_window_close",
+  "play_serverbound_close_window": "play_serverbound_window_close",
   "play_serverbound_chat_message": "play_serverbound_chat",
   "play_serverbound_player_digging": "play_serverbound_player_action",
   "login_clientbound_login_plugin_request": "login_clientbound_plugin_request",

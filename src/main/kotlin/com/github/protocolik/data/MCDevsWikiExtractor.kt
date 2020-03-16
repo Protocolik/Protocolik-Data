@@ -6,8 +6,6 @@ import com.github.protocolik.api.protocol.ProtocolState
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
@@ -35,14 +33,17 @@ fun parse() {
 
     var nettyPackets = true
     val asyncPackets = versions.map {
-        GlobalScope.async {
+        runBlocking {
             val url = it.lastKnownDocumentation
             if (url != null && nettyPackets) {
                 try {
                     if (it.versionNumber == 0) {
                         nettyPackets = false
                     }
-                    ProtocolPackets(it.versionNumber, url).parse()
+                    ProtocolPackets(it, url).parse().also {
+                        it.saveNames()
+                        PacketMappings.parse(it)
+                    }
                 } catch (e: Exception) {
                     throw Exception("Error parsing $url", e)
                 }
@@ -51,10 +52,27 @@ fun parse() {
             }
         }
     }
-    runBlocking {
-        asyncPackets.forEach {
-            it.await().saveNames()
+//    runBlocking {
+//        asyncPackets.forEach {
+//            it.saveNames()
+//        }
+//    }
+}
+
+object PacketMappings {
+    val file = File(ROOT_DIR, "packets_java_versions.json")
+
+    fun parse(list: List<ProtocolPackets.PacketInfo>) {
+        val json = if (!file.exists()) JsonObject() else JsonParser.parseReader(file.reader()).asJsonObject
+        for (packetInfo in list) {
+            val packetType = packetInfo.packetType
+            if (packetType != null) {
+                val jsonPacket = if (json.has(packetType.name.toLowerCase())) json.getAsJsonObject(packetType.name.toLowerCase()) else JsonObject()
+                jsonPacket.addProperty(packetInfo.protocolVersion.releaseName, packetInfo.packetId)
+                json.add(packetType.name.toLowerCase(), jsonPacket)
+            }
         }
+        file.writeText(GSON.toJson(json))
     }
 }
 
@@ -71,15 +89,16 @@ private fun List<ProtocolPackets.PacketInfo>.saveNames() {
             val packetKey = packet.protocolState.name + "_" +
                     packet.protocolDirection.name + "_" +
                     packetName.toUpperCase()
-            if (!map.containsKey(packetName)) {
-                val type = packetTypeValues.find { it.name == packetKey }
+            val type = packetTypeValues.find { it.name == packetKey }
+            if (!map.containsKey(packetName) || map[packetName] == null) {
                 if (type != null) {
                     map[packetName] = type
                 } else {
                     map[packetName] = null
-                    println("Unknown type for name: $packetName - $packetKey???")
+                    println("(${packet.protocolVersion.versionNumber}) Unknown type for name: $packetName [${packet.packetId}] - $packetKey???")
                 }
             }
+            packet.packetType = type
         }
         map.forEach { (key, value) ->
             json.addProperty(key, value?.name?.toLowerCase() ?: "")
@@ -88,21 +107,22 @@ private fun List<ProtocolPackets.PacketInfo>.saveNames() {
     }
 }
 
-class ProtocolPackets(val protocolVersion: Int, val url: URL) {
+class ProtocolPackets(val protocolVersion: ProtocolVersionsNumbers.Version, val url: URL) {
     val packets = LinkedList<PacketInfo>()
     var currentProtocolState: ProtocolState? = null
     var currentProtocolDirection: ProtocolDirection? = null
 
     data class PacketInfo(
-            val protocolVersion: Int,
+            val protocolVersion: ProtocolVersionsNumbers.Version,
             val protocolState: ProtocolState,
             val protocolDirection: ProtocolDirection,
             val packetId: String,
-            val packetName: String
+            val packetName: String,
+            var packetType: PacketType? = null
     )
 
     fun parse(): List<PacketInfo> {
-        println("Parsing $protocolVersion $url")
+        println("Parsing $protocolVersion")
         val document = Jsoup.connect(url.toString()).get()
         val title = document.selectFirst("h1").text()
         if (title.equals("Pre-release protocol", true)) {
@@ -223,6 +243,7 @@ class ProtocolPackets(val protocolVersion: Int, val url: URL) {
             .replace(" ", "_")
             .replace("-", "_")
             .replace("/", "_")
+            .replace("?", "")
 }
 
 object ProtocolVersionsNumbers {

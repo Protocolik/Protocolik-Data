@@ -19,5 +19,5 @@ dependencies {
     api("com.google.code.gson", "gson", "2.8.6")
     api("it.unimi.dsi", "fastutil", "8.3.1")
     api("org.jsoup", "jsoup", "1.13.1")
-    api("com.github.protocolik", "protocolik-api", "fc1664840f")
+    api("com.github.protocolik", "protocolik-api", "ab211d67d1")
 }

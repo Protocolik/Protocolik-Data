@@ -6,15 +6,13 @@ import com.github.protocolik.api.protocol.ProtocolState
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.*
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import java.io.File
 import java.net.URL
 import java.util.*
+import java.util.concurrent.Executors
 import kotlin.collections.HashMap
 
 val ROOT_DIR = if (File("Protocolik-Data").exists()) File("Protocolik-Data") else File("")
@@ -35,15 +33,19 @@ fun parse() {
     File(ROOT_DIR, "protocol_java_versions.json").writeText(GSON.toJson(protocolJavaVersionsJson))
 
     var nettyPackets = true
+    val dispatcher = Executors.newFixedThreadPool(12).asCoroutineDispatcher()
     val asyncPackets = versions.map {
-        GlobalScope.async {
+        GlobalScope.async(dispatcher) {
             val url = it.lastKnownDocumentation
             if (url != null && nettyPackets) {
                 try {
                     if (it.versionNumber == 0) {
                         nettyPackets = false
                     }
-                    ProtocolPackets(it, url).parse()
+                    ProtocolPackets(it, url).parse().also {
+                        it.saveNames()
+                        PacketMappings.parse(it)
+                    }
                 } catch (e: Exception) {
                     throw Exception("Error parsing $url", e)
                 }
@@ -54,8 +56,7 @@ fun parse() {
     }
     runBlocking {
         asyncPackets.awaitAll().forEach {
-            it.saveNames()
-            PacketMappings.parse(it)
+
         }
     }
 }
@@ -63,6 +64,7 @@ fun parse() {
 object PacketMappings {
     val file = File(ROOT_DIR, "packets_java_versions.json")
 
+    @Synchronized
     fun parse(list: List<ProtocolPackets.PacketInfo>) {
         val json = if (!file.exists()) JsonObject() else JsonParser.parseReader(file.reader()).asJsonObject
         for (packetInfo in list) {
@@ -77,6 +79,7 @@ object PacketMappings {
     }
 }
 
+@Synchronized
 private fun List<ProtocolPackets.PacketInfo>.saveNames() {
     val mcDevsWikiPacketNamesJson = File(ROOT_DIR, "mc_devs_wiki_packet_names.json").also { file ->
         val json = if (file.exists()) JsonParser.parseReader(file.reader()).asJsonObject else JsonObject()
@@ -87,9 +90,7 @@ private fun List<ProtocolPackets.PacketInfo>.saveNames() {
         }
         for (packet in this) {
             val packetName = packet.packetName
-            val packetKey = packet.protocolState.name + "_" +
-                    packet.protocolDirection.name + "_" +
-                    packetName.toUpperCase()
+            val packetKey = packetName.toUpperCase()
             val type = packetTypeValues.find { it.name == packetKey }
             if (!map.containsKey(packetName) || map[packetName] == null) {
                 if (type != null) {
@@ -102,7 +103,10 @@ private fun List<ProtocolPackets.PacketInfo>.saveNames() {
             packet.packetType = type
         }
         map.forEach { (key, value) ->
-            json.addProperty(key, value?.name?.toLowerCase() ?: "")
+            val v = value?.name?.toLowerCase() ?: ""
+            if (key != v) {
+                json.addProperty(key, v)
+            }
         }
         file.writeText(GSON.toJson(json))
     }
@@ -158,7 +162,8 @@ class ProtocolPackets(val protocolVersion: ProtocolVersionsNumbers.Version, val 
 //                println("ProtocolDirection=$currentProtocolDirection")
             }
             if (element.`is`("h4")) {
-                currentPacketName = (element.selectFirst("span")?.text() ?: "").formatPacketName()
+                currentPacketName = currentProtocolState!!.name.toLowerCase() + "_" + currentProtocolDirection!!.name.toLowerCase() + "_" + (element.selectFirst("span")?.text()
+                        ?: "").formatPacketName()
 //                println("PacketName=$currentPacketName")
             }
             if (element.`is`("table") && currentPacketName != null) {
@@ -219,7 +224,7 @@ class ProtocolPackets(val protocolVersion: ProtocolVersionsNumbers.Version, val 
 //                    println("TABLED(${tableD.size}) = $tableD")
                         if (tableD.isNotEmpty()) {
                             val packetId = tableD[0].text().trim().split(" ").last()
-                            val packetName = tableD[1].text().formatPacketName()
+                            val packetName = currentProtocolState!!.name.toLowerCase() + "_" + currentProtocolDirection!!.name.toLowerCase() + "_" + tableD[1].text().formatPacketName()
                             val packetInfo = PacketInfo(
                                     protocolVersion,
                                     currentProtocolState!!,
@@ -233,18 +238,26 @@ class ProtocolPackets(val protocolVersion: ProtocolVersionsNumbers.Version, val 
                     }
                 }
             } catch (e: Exception) {
-                throw java.lang.Exception("Error parsing table: $tableRows")
+                throw java.lang.Exception("Error parsing table: $tableRows", e)
             }
         }
     }
 
-    fun String.formatPacketName() = trim().toLowerCase()
+    fun String.formatPacketName() = toLowerCase()
+            .replace(" (clientbound)", "")
+            .replace(" (serverbound)", "")
+            .trim()
             .replace("(", "")
             .replace(")", "")
             .replace(" ", "_")
             .replace("-", "_")
             .replace("/", "_")
-            .replace("?", "")
+            .replace("?", "").also {
+                if (it.endsWith("_")) {
+                    error("_ found: '$it' '$this'")
+                }
+            }
+
 }
 
 object ProtocolVersionsNumbers {

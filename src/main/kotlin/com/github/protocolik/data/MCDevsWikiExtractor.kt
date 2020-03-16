@@ -6,13 +6,15 @@ import com.github.protocolik.api.protocol.ProtocolState
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
-import kotlinx.coroutines.*
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.runBlocking
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import java.io.File
 import java.net.URL
 import java.util.*
-import java.util.concurrent.Executors
 import kotlin.collections.HashMap
 
 val ROOT_DIR = if (File("Protocolik-Data").exists()) File("Protocolik-Data") else File("")
@@ -34,32 +36,29 @@ fun parse() {
     }
     File(ROOT_DIR, "protocol_java_versions.json").writeText(GSON.toJson(protocolJavaVersionsJson))
     var nettyPackets = true
-    val dispatcher = Executors.newFixedThreadPool(1).asCoroutineDispatcher()
-    val asyncPackets = GlobalScope.async(dispatcher) {
-        versions.map {
-            async {
-                val url = it.lastKnownDocumentation
-                if (url != null && nettyPackets) {
-                    try {
-                        if (it.versionNumber == 0) {
-                            nettyPackets = false
+    val asyncPackets =
+            versions.map {
+                GlobalScope.async {
+                    val url = it.lastKnownDocumentation
+                    if (url != null && nettyPackets) {
+                        try {
+                            if (it.versionNumber == 0) {
+                                nettyPackets = false
+                            }
+                            ProtocolPackets(it, url).parse()
+                        } catch (e: Exception) {
+                            throw Exception("Error parsing $url", e)
                         }
-                        ProtocolPackets(it, url).parse().also {
-                            it.saveNames()
-                            PacketMappings.parse(it)
-                        }
-                    } catch (e: Exception) {
-                        throw Exception("Error parsing $url", e)
-                    }
                 } else {
                     emptyList()
                 }
             }
         }
-    }
-    runBlocking {
-        asyncPackets.await().awaitAll().forEach {
 
+    runBlocking {
+        asyncPackets.awaitAll().forEach {
+            it.saveNames()
+            PacketMappings.parse(it)
         }
     }
 }
